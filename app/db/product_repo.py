@@ -126,9 +126,8 @@ def _load_on_sale() -> list[dict[str, Any]]:
                        p.category_id, c.name AS category_name
                 FROM products p
                 LEFT JOIN categories c ON p.category_id = c.id
-                WHERE p.shop_id = %s AND p.listing_status = 1 AND p.stock > 0
+                WHERE p.listing_status = 1 AND p.stock > 0
                 """,
-                (settings.shop_id,),
             )
             rows = cursor.fetchall()
     finally:

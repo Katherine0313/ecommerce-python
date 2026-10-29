@@ -37,9 +37,6 @@ class Settings:
     chat_model: str = _env("CHAT_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
     temperature: float = float(_env("CHAT_TEMPERATURE", "0.7"))
 
-    # 当前店铺（多租户沙箱）：与小程序端 SHOP_ID 保持一致
-    shop_id: int = int(_env("SHOP_ID", "1"))
-
     # 商品缓存刷新间隔（秒）：商品少，60 秒足够，避免每次请求都扫库
     product_cache_ttl: float = float(_env("PRODUCT_CACHE_TTL", "60"))
 

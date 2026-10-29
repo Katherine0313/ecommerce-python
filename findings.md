@@ -30,7 +30,7 @@
 
 ## 商品检索
 
-- 只读 `products` + `categories`，条件 `shop_id = ? AND listing_status = 1 AND stock > 0`
+- 只读 `products` + `categories`，条件 `listing_status = 1 AND stock > 0`（2026-10-29 多租户下线，已去掉 `shop_id`）
 - 结果内存缓存 60 秒（`asyncio.Lock` 防并发击穿）
 - 价格解析：`1000以内`、`500-1000`、`1000以上`、`5千以内`、`两千以内`
 - 关键词匹配：中文 2/3 字滑窗 + 英文数字整词，与商品名/副标题/品牌/分类名求交集；品牌、分类命中额外加权

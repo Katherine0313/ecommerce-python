@@ -37,7 +37,7 @@
 ### 阶段 3：生产部署 — 待做（顺序不能乱）
 - [ ] 数据库：`orders` 加 `is_subscribe_unpaid` / `unpaid_notify_sent` + `idx_orders_unpaid_notify`
 - [ ] 上传 `upload/image/opt/` 与 `upload/image/category/`，再把 `categories.image` 改成 `.webp`
-- [ ] 服务器 `.env` 补 `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DATABASE` / `SHOP_ID`
+- [ ] 服务器 `.env` 补 `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DATABASE`（`SHOP_ID` 已于 2026-10-29 随多租户下线删除）
 - [ ] 上传 8 个 Java 服务 jar、Python 代码到 `/www/java/ai-service/`、新 compose
 - [ ] `docker compose build ai-service gateway` → 起业务服务 → 起 ai-service → 起 gateway
 - [ ] 验证通过后 `stop/rm ai-agent-service`，Nacos 剩 8 个实例
