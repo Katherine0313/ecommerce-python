@@ -45,6 +45,11 @@ _PERSONAL_ORDER = re.compile(r"(我的订单|订单号|我买的|我的物流|�
 _STORE_INTRO = re.compile(
     r"(卖什么|卖哪些|经营什么|经营哪些|主营|有什么产品|有什么商品|有哪些产品|有哪些商品|卖什么东西)"
 )
+# 优惠券/活动类问题：直接查后台实时配置，避免知识库静态文案与当前活动脱节
+_PROMO_QUERY = re.compile(
+    r"(有什么优惠|有哪些优惠|什么优惠|优惠活动|有什么活动|有哪些活动|有活动吗|活动内容|"
+    r"有优惠券|有什么券|能领什么券|领券|新人券|满减|立减|秒杀|拼团|促销|打折|买更便宜|划算)"
+)
 
 # 工具调用强约束：追加在角色提示词之后，覆盖所有角色，避免模型用通用政策话术
 # 回答本该查真实数据的问题（如「我的最新订单发货了吗」只回一段发货时效规则）。
@@ -60,6 +65,7 @@ _TOOL_RULES = """
 8. 用户按品类找商品（"推荐手机""有什么平板""看看相机"）时，search_products / recommend_product 的关键词只传品类名本身（手机/电脑/平板/耳机音箱/手表/相机/数码配件/智能家居），不要传"推荐手机"这类整句、不要加"推荐"二字，否则会把手机壳等配件一起搜出来；
 9. 用户给出订单号（如"订单号 2026xxx，发货了吗"）时，必须把订单号原样作为 query_order 的 keyword 传入；给出商品名时同理传商品名；只有完全没提订单、也没提商品时才不传 keyword（默认查最近 5 笔）；
 10. 用户问"你们店里卖什么""经营什么""有什么产品/商品"这类店铺介绍类问题时，先调用 search_knowledge（知识库有店铺与商品分类）；只有问"有什么热销的""推荐几款"时才用 search_products 取商品；两类结果都为空再如实说明。
+11. 禁止编造券名称、面额、门槛、有效期或活动商品；没有依据的券和活动一律视为不存在，规则细节（能否叠加、如何使用）不确定时建议用户查看「我的-优惠券」。
 """
 
 # 工具执行后的最终汇总约束：防止模型看到 ToolMessage 后再次想调工具、产出空内容
@@ -288,6 +294,7 @@ async def chat_stream(
     conversation_id: Optional[int] = None,
     role_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    anonymous_id: Optional[str] = None,
     admin_id: Optional[int] = None,
     admin_perms: Optional[list[str]] = None,
 ) -> AsyncGenerator[dict, None]:
@@ -318,9 +325,14 @@ async def chat_stream(
             if not conv or conv["source"] != source:
                 yield {"type": "error", "message": "会话不存在", "code": 404}
                 return
-            if source == "mall" and user_id and conv["user_id"] != user_id:
-                yield {"type": "error", "message": "无权访问该会话", "code": 403}
-                return
+            if source == "mall":
+                # 登录用户按 user_id 校验；匿名用户按 anonymous_id 校验
+                if user_id and conv["user_id"] != user_id:
+                    yield {"type": "error", "message": "无权访问该会话", "code": 403}
+                    return
+                if anonymous_id and conv["anonymous_id"] != anonymous_id:
+                    yield {"type": "error", "message": "无权访问该会话", "code": 403}
+                    return
             if source == "admin" and admin_id and conv["admin_id"] != admin_id:
                 yield {"type": "error", "message": "无权访问该会话", "code": 403}
                 return
@@ -342,7 +354,7 @@ async def chat_stream(
         if not conv:
             conversation_id = repo.create_conversation(
                 source=source, role_id=role_id, system_message=system_message,
-                admin_id=admin_id, user_id=user_id,
+                admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id,
             )
             is_new = True
 
@@ -359,7 +371,7 @@ async def chat_stream(
                 except Exception as exc:
                     reply = f"执行失败：{exc}"
                 await _clear_pending(conversation_id)
-                repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id)
+                repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
                 repo.save_message(conversation_id, "assistant", reply, role_id=role_id)
                 repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
                 yield {"type": "token", "text": reply}
@@ -369,7 +381,7 @@ async def chat_stream(
             if _CANCEL_WORDS.match(text):
                 await _clear_pending(conversation_id)
                 reply = "好的，已取消该操作。"
-                repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id)
+                repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
                 repo.save_message(conversation_id, "assistant", reply, role_id=role_id)
                 yield {"type": "token", "text": reply}
                 yield {"type": "done"}
@@ -378,17 +390,21 @@ async def chat_stream(
             # 非确认/取消：清掉旧动作，走正常对话
             await _clear_pending(conversation_id)
 
-        # 4.5 政策/店铺介绍类问题：知识库有标准答案就直接回，避免模型改写问题或空答
-        if _is_kb_direct(text):
+        # 4.5 优惠券/活动类问题：直接查后台实时配置，避免知识库静态文案与当前活动脱节
+        direct: Optional[str] = None
+        if _PROMO_QUERY.search(text):
+            direct = await ai_tools.promo_answer()
+        # 4.6 政策/店铺介绍类问题：知识库有标准答案就直接回，避免模型改写问题或空答
+        if not direct and _is_kb_direct(text):
             direct = await ai_tools.knowledge_answer(text)
-            if direct:
-                repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id)
-                repo.save_message(conversation_id, "assistant", direct, role_id=role_id)
-                repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
-                yield {"type": "token", "text": direct}
-                yield {"type": "done"}
-                _log("chat", True)
-                return
+        if direct:
+            repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
+            repo.save_message(conversation_id, "assistant", direct, role_id=role_id)
+            repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
+            yield {"type": "token", "text": direct}
+            yield {"type": "done"}
+            _log("chat", True)
+            return
 
         # 5. 组装消息：system + 历史 + 当前
         max_ctx = int((conv or {}).get("max_contexts") or 20)
@@ -409,8 +425,13 @@ async def chat_stream(
         role_tools = repo.list_role_tool_names(role_id)
         allowed = _filter_allowed_tools(source, role_tools, admin_perms)
 
-        # 7. 注入工具上下文（user_id 等）
-        ai_tools.set_context({"user_id": user_id, "admin_id": admin_id, "source": source})
+        # 7. 注入工具上下文（user_id / role_category 等，知识库按 scope 过滤）
+        ai_tools.set_context({
+            "user_id": user_id,
+            "admin_id": admin_id,
+            "source": source,
+            "role_category": role.get("category") or ("客服" if source == "mall" else "运营"),
+        })
 
         # 8. 跑图
         final_state: AgentState = await _graph.ainvoke(
@@ -426,7 +447,7 @@ async def chat_stream(
         # 9. 固定话术（闲聊）
         if final_state.get("fixed_reply"):
             reply = final_state["fixed_reply"]
-            repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id)
+            repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
             repo.save_message(conversation_id, "assistant", reply, role_id=role_id)
             repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
             yield {"type": "token", "text": reply}
@@ -450,7 +471,7 @@ async def chat_stream(
                 f"修改为「{pa['new_value']}」。请确认是否执行？"
             )
             yield {"type": "confirm", "action": pa, "text": confirm_text}
-            repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id)
+            repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
             repo.save_message(conversation_id, "assistant", confirm_text, role_id=role_id)
             repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
             yield {"type": "done"}
@@ -490,7 +511,7 @@ async def chat_stream(
 
         # 13. 落库
         full_answer = "".join(answer_parts)
-        repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id)
+        repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
         repo.save_message(conversation_id, "assistant", full_answer, role_id=role_id)
         repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
         yield {"type": "done"}

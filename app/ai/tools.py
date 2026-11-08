@@ -20,6 +20,7 @@ from langchain_core.tools import tool
 from app import internal_client
 from app.kb.embedding import semantic_match
 from app.kb.matcher import CONTAINED_SCORE, THRESHOLD, match_best
+from app.kb.promo import promo_answer
 from app.kb.repo import load_entries, record_hit
 
 logger = logging.getLogger(__name__)
@@ -218,8 +219,10 @@ async def recommend_product(scene: Optional[str] = None, max_price: Optional[flo
 # ---------- 4. 知识库检索 ----------
 
 async def _match_entry(question: str):
-    """词面优先、语义兜底，返回命中的知识条目（未达阈值返回 None）。"""
-    entries = await load_entries()
+    """词面优先、语义兜底，返回命中的知识条目（未达阈值返回 None）。
+    按当前角色的 scope（客服/运营）过滤知识库。"""
+    role_category = (_ctx().get("role_category") or "客服")
+    entries = await load_entries(scope=role_category)
     best = match_best(entries, question, "")
     # 词面没到「包含标准问题」级别时，同时算语义分并取更高者：
     # 例如「我今天下单能发货吗」词面会偏向「春节发货吗」，语义能正确指向「多久发货」

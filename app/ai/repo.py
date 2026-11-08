@@ -108,19 +108,20 @@ def create_conversation(
     system_message: Optional[str],
     admin_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    anonymous_id: Optional[str] = None,
 ) -> int:
     return _execute(
         """INSERT INTO ai_chat_conversation
-           (title, admin_id, user_id, source, role_id, system_message)
-           VALUES ('新对话', %s, %s, %s, %s, %s)""",
-        (admin_id, user_id, source, role_id, system_message),
+           (title, admin_id, user_id, anonymous_id, source, role_id, system_message)
+           VALUES ('新对话', %s, %s, %s, %s, %s, %s)""",
+        (admin_id, user_id, anonymous_id, source, role_id, system_message),
     )
 
 
 def get_conversation(conv_id: int) -> Optional[dict[str, Any]]:
     return _query_one(
-        """SELECT id, title, admin_id, user_id, source, role_id, system_message,
-                  temperature, max_tokens, max_contexts, pinned
+        """SELECT id, title, admin_id, user_id, anonymous_id, source, role_id, system_message,
+                  temperature, max_tokens, max_contexts, pinned, human_mode, human_at
            FROM ai_chat_conversation WHERE id = %s""",
         (conv_id,),
     )
@@ -130,20 +131,61 @@ def list_conversations(
     source: str,
     admin_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    anonymous_id: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     if source == "mall":
+        # 登录用户按 user_id 过滤；匿名用户按 anonymous_id 过滤
+        if anonymous_id:
+            return _query_all(
+                """SELECT id, title, role_id, pinned, human_mode, updated_at FROM ai_chat_conversation
+                   WHERE source = 'mall' AND anonymous_id = %s
+                   ORDER BY pinned DESC, updated_at DESC LIMIT %s""",
+                (anonymous_id, limit),
+            )
         return _query_all(
-            """SELECT id, title, role_id, pinned, updated_at FROM ai_chat_conversation
+            """SELECT id, title, role_id, pinned, human_mode, updated_at FROM ai_chat_conversation
                WHERE source = 'mall' AND user_id = %s
                ORDER BY pinned DESC, updated_at DESC LIMIT %s""",
             (user_id, limit),
         )
     return _query_all(
-        """SELECT id, title, role_id, pinned, updated_at FROM ai_chat_conversation
+        """SELECT id, title, role_id, pinned, human_mode, updated_at FROM ai_chat_conversation
            WHERE source = 'admin' AND admin_id = %s
            ORDER BY pinned DESC, updated_at DESC LIMIT %s""",
         (admin_id, limit),
+    )
+
+
+def set_human_mode(conv_id: int, enabled: bool) -> None:
+    """开启/结束人工会话；开启时记录转人工时间。"""
+    if enabled:
+        _execute(
+            """UPDATE ai_chat_conversation
+               SET human_mode = 1, human_at = NOW(), updated_at = NOW() WHERE id = %s""",
+            (conv_id,),
+        )
+    else:
+        _execute(
+            "UPDATE ai_chat_conversation SET human_mode = 0, updated_at = NOW() WHERE id = %s",
+            (conv_id,),
+        )
+
+
+def list_human_conversations(limit: int = 100) -> list[dict[str, Any]]:
+    """后台人工客服工作台：所有待处理/进行中的人工会话。"""
+    return _query_all(
+        """SELECT c.id, c.title, c.user_id, c.human_mode, c.human_at, c.updated_at,
+                  u.name AS user_name, u.avatar AS user_avatar,
+                  m.content AS last_message, m.type AS last_type, m.created_at AS last_at
+           FROM ai_chat_conversation c
+           LEFT JOIN `user` u ON u.id = c.user_id
+           LEFT JOIN ai_chat_message m ON m.id = (
+               SELECT MAX(m2.id) FROM ai_chat_message m2 WHERE m2.conversation_id = c.id
+           )
+           WHERE c.source = 'mall' AND c.human_mode = 1
+           ORDER BY c.updated_at DESC LIMIT %s""",
+        (limit,),
     )
 
 
@@ -173,6 +215,7 @@ def save_message(
     content: Optional[str],
     admin_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    anonymous_id: Optional[str] = None,
     role_id: Optional[int] = None,
     tool_calls: Optional[list] = None,
     tool_call_id: Optional[str] = None,
@@ -180,12 +223,13 @@ def save_message(
 ) -> int:
     return _execute(
         """INSERT INTO ai_chat_message
-           (conversation_id, admin_id, user_id, role_id, type, content, tool_calls, tool_call_id, tool_name)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+           (conversation_id, admin_id, user_id, anonymous_id, role_id, type, content, tool_calls, tool_call_id, tool_name)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             conv_id,
             admin_id,
             user_id,
+            anonymous_id,
             role_id,
             msg_type,
             content,
@@ -278,3 +322,117 @@ def save_call_log(
 
 def monotonic_ms() -> int:
     return int(time.monotonic() * 1000)
+
+
+# ---------- 知识库管理（运营/客服分库） ----------
+
+def list_kb_entries(
+    scope: Optional[str] = None,
+    category: Optional[str] = None,
+    status: Optional[int] = None,
+    keyword: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> list[dict[str, Any]]:
+    wh = "WHERE 1=1"
+    args: list = []
+    if scope:
+        wh += " AND scope = %s"
+        args.append(scope)
+    if category:
+        wh += " AND category = %s"
+        args.append(category)
+    if status is not None:
+        wh += " AND status = %s"
+        args.append(status)
+    if keyword:
+        wh += " AND (question LIKE %s OR keywords LIKE %s)"
+        args.extend([f"%{keyword}%", f"%{keyword}%"])
+    offset = (page - 1) * page_size
+    sql = f"""
+        SELECT id, scope, category, question, answer, keywords, priority, status, hit_count, created_at, updated_at
+        FROM ai_kb_qa
+        {wh}
+        ORDER BY id DESC
+        LIMIT %s OFFSET %s
+    """
+    args.extend([page_size, offset])
+    return _query_all(sql, tuple(args))
+
+
+def count_kb_entries(
+    scope: Optional[str] = None,
+    category: Optional[str] = None,
+    status: Optional[int] = None,
+    keyword: Optional[str] = None,
+) -> int:
+    wh = "WHERE 1=1"
+    args: list = []
+    if scope:
+        wh += " AND scope = %s"
+        args.append(scope)
+    if category:
+        wh += " AND category = %s"
+        args.append(category)
+    if status is not None:
+        wh += " AND status = %s"
+        args.append(status)
+    if keyword:
+        wh += " AND (question LIKE %s OR keywords LIKE %s)"
+        args.extend([f"%{keyword}%", f"%{keyword}%"])
+    row = _query_one(f"SELECT COUNT(*) c FROM ai_kb_qa {wh}", tuple(args))
+    return int(row["c"]) if row else 0
+
+
+def get_kb_entry(entry_id: int) -> Optional[dict[str, Any]]:
+    return _query_one(
+        "SELECT id, scope, category, question, answer, keywords, priority, status, hit_count FROM ai_kb_qa WHERE id = %s",
+        (entry_id,),
+    )
+
+
+def create_kb_entry(
+    scope: str,
+    category: str,
+    question: str,
+    answer: str,
+    keywords: str = "",
+    priority: int = 0,
+    status: int = 1,
+) -> int:
+    return _execute(
+        """INSERT INTO ai_kb_qa (scope, category, question, answer, keywords, priority, status)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (scope, category, question, answer, keywords, priority, status),
+    )
+
+
+def update_kb_entry(entry_id: int, **fields) -> None:
+    allowed = {"scope", "category", "question", "answer", "keywords", "priority", "status"}
+    sets = []
+    args = []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k} = %s")
+            args.append(v)
+    if not sets:
+        return
+    args.append(entry_id)
+    _execute(f"UPDATE ai_kb_qa SET {', '.join(sets)} WHERE id = %s", tuple(args))
+
+
+def delete_kb_entry(entry_id: int) -> None:
+    _execute("DELETE FROM ai_kb_qa WHERE id = %s", (entry_id,))
+
+
+def list_kb_categories(scope: Optional[str] = None) -> list[str]:
+    if scope:
+        rows = _query_all(
+            "SELECT DISTINCT category FROM ai_kb_qa WHERE scope = %s AND category != '' ORDER BY category",
+            (scope,),
+        )
+    else:
+        rows = _query_all(
+            "SELECT DISTINCT category FROM ai_kb_qa WHERE category != '' ORDER BY category"
+        )
+    return [r["category"] for r in rows]

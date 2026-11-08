@@ -10,8 +10,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY sql ./sql
+COPY migrate.py ./migrate.py
+COPY entrypoint.sh ./entrypoint.sh
+
+RUN chmod +x entrypoint.sh
 
 EXPOSE 8000
 
-# 单进程即可；SSE 依赖长连接，worker 数按机器内存再调
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动时先执行 sql/ 下的迁移脚本（幂等），成功后再启动服务
+ENTRYPOINT ["./entrypoint.sh"]

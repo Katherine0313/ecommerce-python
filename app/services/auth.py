@@ -68,6 +68,30 @@ def require_user(authorization: Optional[str]) -> str:
     return subject
 
 
+def get_identity(authorization: Optional[str], anonymous_id: Optional[str] = None) -> dict[str, Any]:
+    """解析调用方身份。
+
+    - 带有效 user JWT → {"type": "user", "id": <uid:int>, "anonymous_id": None}
+    - 无 token 但带 X-Anonymous-Id → {"type": "anonymous", "id": None, "anonymous_id": <uuid>}
+    - 两者都没有 → 抛 AuthError(401)
+
+    anonymous_id 做基本格式校验：32~64 位十六进制/连字符。
+    """
+    # 1) 优先走已登录用户
+    try:
+        uid = require_user(authorization)
+        return {"type": "user", "id": int(uid), "anonymous_id": None}
+    except AuthError:
+        pass
+
+    # 2) 匿名访客：必须带 X-Anonymous-Id
+    aid = (anonymous_id or "").strip()
+    if aid and 32 <= len(aid) <= 64:
+        return {"type": "anonymous", "id": None, "anonymous_id": aid}
+
+    raise AuthError("未登录或登录已过期", 401)
+
+
 def require_token(authorization: Optional[str], expect_type: str) -> dict[str, Any]:
     """按身份类型校验令牌，返回完整 payload（含 roles / permissions）。
 

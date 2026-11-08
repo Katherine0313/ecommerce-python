@@ -3,9 +3,10 @@
 打分规则（与 docs/客服机器人知识库接入说明.md 保持一致）：
 - 完全一致：100
 - 用户问法包含标准问题：92
-- 关键词命中：2 字 +55，3 字及以上 +65，累计上限 100
+- 关键词命中：2 字 +55，3 字及以上 +65，累计上限 100（子串关键词不重复计分）
 - 字二元组 Dice 相似度：×60
 - 上一轮命中同一分类：+8
+- 模糊分上限 91：保证完全一致（100）和包含（92）永远优先
 阈值 55，低于阈值视为未命中。
 """
 
@@ -20,6 +21,7 @@ KEYWORD_LONG_SCORE = 65
 KEYWORD_SCORE_CAP = 100
 DICE_WEIGHT = 60
 SAME_CATEGORY_BONUS = 8
+FUZZY_SCORE_CAP = CONTAINED_SCORE - 1
 THRESHOLD = 55
 
 
@@ -68,17 +70,21 @@ def score_entry(entry: KbEntry, user_text: str, user_grams: set[str],
 
     score = 0.0
     keyword_score = 0
-    for keyword in entry.keywords:
-        if keyword in user_text:
-            length = len(keyword)
-            keyword_score += KEYWORD_LONG_SCORE if length >= 3 else KEYWORD_SHORT_SCORE
-            if keyword_score >= KEYWORD_SCORE_CAP:
-                break
+    # 子串关键词不重复计分：「优惠券」命中时不再叠加「优惠」，避免关键词多的条目虚高
+    matched = sorted((k for k in entry.keywords if k in user_text), key=len, reverse=True)
+    counted: list[str] = []
+    for keyword in matched:
+        if any(keyword in other for other in counted):
+            continue
+        counted.append(keyword)
+        keyword_score += KEYWORD_LONG_SCORE if len(keyword) >= 3 else KEYWORD_SHORT_SCORE
+        if keyword_score >= KEYWORD_SCORE_CAP:
+            break
     score += min(keyword_score, KEYWORD_SCORE_CAP)
     score += _dice(user_grams, entry.grams) * DICE_WEIGHT
     if last_category and entry.category == last_category:
         score += SAME_CATEGORY_BONUS
-    return score
+    return min(score, float(FUZZY_SCORE_CAP))
 
 
 def match_best(entries: list[KbEntry], user_message: str,
@@ -88,6 +94,11 @@ def match_best(entries: list[KbEntry], user_message: str,
     if not user_text or not entries:
         return None
     user_grams = bigrams(user_text)
+
+    # 完全一致优先：命中标准问题直接返回，避免被关键词多的相邻条目挤掉
+    for entry in entries:
+        if entry.norm_question == user_text:
+            return MatchResult(entry, float(EXACT_SCORE))
 
     best: MatchResult | None = None
     for entry in entries:

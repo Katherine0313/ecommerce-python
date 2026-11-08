@@ -7,6 +7,7 @@
 import asyncio
 import logging
 import time
+from typing import Optional
 
 import pymysql
 from pymysql.cursors import DictCursor
@@ -17,8 +18,6 @@ from app.kb.normalize import split_keywords
 
 logger = logging.getLogger(__name__)
 
-_cache: list[KbEntry] = []
-_cache_at: float = 0.0
 _cache_lock = asyncio.Lock()
 
 
@@ -37,18 +36,29 @@ def _connect() -> pymysql.connections.Connection:
     )
 
 
-def _load_entries() -> list[KbEntry]:
+def _load_entries(scope: Optional[str] = None) -> list[KbEntry]:
     conn = _connect()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, category, question, answer, keywords, priority, hit_count
-                FROM ai_kb_qa
-                WHERE status = 1
-                ORDER BY priority DESC, id ASC
-                """
-            )
+            if scope:
+                cursor.execute(
+                    """
+                    SELECT id, category, question, answer, keywords, priority, hit_count
+                    FROM ai_kb_qa
+                    WHERE status = 1 AND scope = %s
+                    ORDER BY priority DESC, id ASC
+                    """,
+                    (scope,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, category, question, answer, keywords, priority, hit_count
+                    FROM ai_kb_qa
+                    WHERE status = 1
+                    ORDER BY priority DESC, id ASC
+                    """
+                )
             rows = cursor.fetchall()
     finally:
         conn.close()
@@ -67,25 +77,35 @@ def _load_entries() -> list[KbEntry]:
     ]
 
 
-async def load_entries() -> list[KbEntry]:
+# 按 scope 分缓存，避免客服/运营知识库互相串扰
+_scope_cache: dict[str, list[KbEntry]] = {}
+_scope_cache_at: dict[str, float] = {}
+
+
+async def load_entries(scope: Optional[str] = None) -> list[KbEntry]:
     """带缓存读取启用的知识条；库挂了就沿用旧缓存。"""
-    global _cache, _cache_at
+    cache_key = scope or "__all__"
+    global _scope_cache, _scope_cache_at
     now = time.monotonic()
-    if _cache and now - _cache_at < settings.kb_cache_ttl:
-        return _cache
+    cached = _scope_cache.get(cache_key)
+    cached_at = _scope_cache_at.get(cache_key, 0.0)
+    if cached and now - cached_at < settings.kb_cache_ttl:
+        return cached
 
     async with _cache_lock:
         now = time.monotonic()
-        if _cache and now - _cache_at < settings.kb_cache_ttl:
-            return _cache
+        cached = _scope_cache.get(cache_key)
+        cached_at = _scope_cache_at.get(cache_key, 0.0)
+        if cached and now - cached_at < settings.kb_cache_ttl:
+            return cached
         try:
-            entries = await asyncio.to_thread(_load_entries)
-            _cache = entries
-            _cache_at = time.monotonic()
-            logger.info("知识库缓存已刷新：%s 条", len(entries))
+            entries = await asyncio.to_thread(_load_entries, scope)
+            _scope_cache[cache_key] = entries
+            _scope_cache_at[cache_key] = time.monotonic()
+            logger.info("知识库缓存已刷新[scope=%s]：%s 条", scope, len(entries))
         except Exception:
-            logger.exception("读取知识库失败，沿用旧缓存")
-    return _cache
+            logger.exception("读取知识库失败[scope=%s]，沿用旧缓存", scope)
+    return _scope_cache.get(cache_key, [])
 
 
 def _record_hit(entry_id: int) -> None:
