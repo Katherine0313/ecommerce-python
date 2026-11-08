@@ -36,6 +36,8 @@ class Settings:
 
     # 知识库缓存刷新间隔（秒）：运营改库后最多这么久生效
     kb_cache_ttl: float = float(_env("KB_CACHE_TTL", "60"))
+    # 语义检索阈值（余弦相似度）：bge-m3 实测同义问法 0.83~0.94、无关问题 <0.72
+    kb_semantic_threshold: float = float(_env("KB_SEMANTIC_THRESHOLD", "0.78"))
 
     # ===== 鉴权与防滥用 =====
     # 与 Java 服务共用同一个 JWT_SECRET，只校验不签发

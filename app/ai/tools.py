@@ -18,7 +18,8 @@ from typing import Any, Optional
 from langchain_core.tools import tool
 
 from app import internal_client
-from app.kb.matcher import THRESHOLD, match_best
+from app.kb.embedding import semantic_match
+from app.kb.matcher import CONTAINED_SCORE, THRESHOLD, match_best
 from app.kb.repo import load_entries, record_hit
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def _product_card(p: dict) -> dict:
 # 品类词必须先映射成分类再查（分类含子分类），才能只出整机、不混配件。
 _CATEGORY_TTL_SECONDS = 600
 _category_cache: dict[str, int] = {}
+_top_category_names: list[str] = []
 _category_cache_at = 0.0
 
 
@@ -80,28 +82,48 @@ def _normalize_keyword(keyword: Optional[str]) -> Optional[str]:
     return word or None
 
 
+async def _ensure_categories() -> dict[str, int]:
+    """加载并缓存「分类名 → 分类 ID」，同时记下一级品类名。接口异常时返回空字典。"""
+    global _category_cache, _top_category_names, _category_cache_at
+    now = time.monotonic()
+    if _category_cache and now - _category_cache_at <= _CATEGORY_TTL_SECONDS:
+        return _category_cache
+    try:
+        tree = await internal_client.list_categories()
+    except Exception as exc:  # 分类接口异常时退化为关键词搜索，不阻断对话
+        logger.warning("加载分类树失败，退化为关键词搜索: %s", exc)
+        return _category_cache
+    mapping: dict[str, int] = {}
+    tops: list[str] = []
+    for parent in tree or []:
+        if parent.get("name") and parent.get("id"):
+            mapping[parent["name"]] = parent["id"]
+            tops.append(parent["name"])
+        for child in parent.get("children") or []:
+            if child.get("name") and child.get("id"):
+                mapping[child["name"]] = child["id"]
+    _category_cache = mapping
+    _top_category_names = tops
+    _category_cache_at = now
+    return mapping
+
+
 async def _category_id_of(keyword: Optional[str]) -> Optional[int]:
     """关键词恰好等于分类名时返回分类 ID；否则返回 None 走原关键词搜索。"""
-    global _category_cache, _category_cache_at
     if not keyword:
         return None
-    now = time.monotonic()
-    if not _category_cache or now - _category_cache_at > _CATEGORY_TTL_SECONDS:
-        try:
-            tree = await internal_client.list_categories()
-        except Exception as exc:  # 分类接口异常时退化为关键词搜索，不阻断对话
-            logger.warning("加载分类树失败，退化为关键词搜索: %s", exc)
-            return None
-        mapping: dict[str, int] = {}
-        for parent in tree:
-            if parent.get("name") and parent.get("id"):
-                mapping[parent["name"]] = parent["id"]
-            for child in parent.get("children") or []:
-                if child.get("name") and child.get("id"):
-                    mapping[child["name"]] = child["id"]
-        _category_cache = mapping
-        _category_cache_at = now
-    return _category_cache.get(keyword)
+    return (await _ensure_categories()).get(keyword)
+
+
+async def catalog_hint() -> str:
+    """把店铺真实在售品类拼进 system prompt，避免模型凭空编造店里没有的品类/场景。"""
+    await _ensure_categories()
+    if not _top_category_names:
+        return ""
+    return (
+        "\n\n【店铺在售品类】" + "、".join(_top_category_names)
+        + "。推荐商品或追问顾客需求时，只能围绕这些真实品类以及工具查到的商品，不要虚构店里没有的品类。"
+    )
 
 
 # ---------- 1. 查单个商品 ----------
@@ -161,9 +183,9 @@ async def search_products(
 
 @tool
 async def recommend_product(scene: Optional[str] = None, max_price: Optional[float] = None) -> str:
-    """根据用户描述的场景推荐在售商品，返回商品卡片。scene 如「送女友」「宿舍用」。
+    """根据用户需求推荐在售商品，返回商品卡片。scene 传真实品类或具体需求，如「手机」「降噪耳机」。
 
-    scene 是品类词（如「手机」）时按分类筛选；其它场景词按关键词搜索。
+    scene 恰好是店铺品类名时按分类筛选；其它词按商品名/品牌关键词搜索。
     """
     scene = _normalize_keyword(scene)
     category_id = await _category_id_of(scene)
@@ -195,16 +217,39 @@ async def recommend_product(scene: Optional[str] = None, max_price: Optional[flo
 
 # ---------- 4. 知识库检索 ----------
 
+async def _match_entry(question: str):
+    """词面优先、语义兜底，返回命中的知识条目（未达阈值返回 None）。"""
+    entries = await load_entries()
+    best = match_best(entries, question, "")
+    # 词面没到「包含标准问题」级别时，同时算语义分并取更高者：
+    # 例如「我今天下单能发货吗」词面会偏向「春节发货吗」，语义能正确指向「多久发货」
+    if not best or best.score < CONTAINED_SCORE:
+        semantic = await semantic_match(entries, question)
+        if semantic and (not best or semantic.score > best.score):
+            best = semantic
+    if not best or best.score < THRESHOLD:
+        return None
+    return best.entry
+
+
+async def knowledge_answer(question: str) -> Optional[str]:
+    """政策/店铺介绍类问题的确定性答案，供直答分支使用（不经模型改写问题）。"""
+    entry = await _match_entry(question)
+    if not entry:
+        return None
+    await record_hit(entry.id)
+    return entry.answer
+
+
 @tool
 async def search_knowledge(question: str) -> str:
     """检索客服知识库，回答退换货、发货时间、尺码、运费、正品保障等规则类问题。"""
-    entries = await load_entries()
-    best = match_best(entries, question, "")
-    if not best or best.score < THRESHOLD:
+    entry = await _match_entry(question)
+    if not entry:
         return json.dumps({"matched": False}, ensure_ascii=False)
-    await record_hit(best.entry.id)
+    await record_hit(entry.id)
     return json.dumps(
-        {"matched": True, "answer": best.entry.answer, "matched_question": best.entry.question},
+        {"matched": True, "answer": entry.answer, "matched_question": entry.question},
         ensure_ascii=False,
     )
 
