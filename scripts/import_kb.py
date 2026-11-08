@@ -1,6 +1,6 @@
-"""把 docs/QandA.xlsx 导入 MySQL 知识库表 kb_qa。
+"""把 docs/QandA.xlsx 导入 MySQL 知识库表 ai_kb_qa。
 
-用法（在 recommender-python 目录下执行）：
+用法（在 ecommerce-python 目录下执行）：
     python scripts/import_kb.py
     python scripts/import_kb.py --xlsx ../e-commerce-boot/docs/QandA.xlsx
     python scripts/import_kb.py --dry-run
@@ -104,7 +104,7 @@ def upsert_rows(conn, rows: list[dict], dry_run: bool) -> tuple[int, int]:
     with conn.cursor() as cursor:
         for row in rows:
             cursor.execute(
-                "SELECT id FROM kb_qa WHERE category = %s AND question = %s",
+                "SELECT id FROM ai_kb_qa WHERE category = %s AND question = %s",
                 (row["category"], row["question"]),
             )
             existed = cursor.fetchone() is not None
@@ -116,7 +116,7 @@ def upsert_rows(conn, rows: list[dict], dry_run: bool) -> tuple[int, int]:
                 continue
             cursor.execute(
                 """
-                INSERT INTO kb_qa (category, question, answer, keywords)
+                INSERT INTO ai_kb_qa (category, question, answer, keywords)
                 VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     answer = VALUES(answer),
@@ -135,7 +135,7 @@ def upsert_rows(conn, rows: list[dict], dry_run: bool) -> tuple[int, int]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="导入客服知识库到 kb_qa")
+    parser = argparse.ArgumentParser(description="导入客服知识库到 ai_kb_qa")
     parser.add_argument("--xlsx", type=Path, default=DEFAULT_XLSX, help="QandA.xlsx 路径")
     parser.add_argument("--sql", type=Path, default=DEFAULT_SQL, help="建表 SQL 路径")
     parser.add_argument("--dry-run", action="store_true", help="只统计，不写库")

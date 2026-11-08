@@ -3,7 +3,7 @@
 - POST /api/agent/chat        非流式，返回 {success, data:{reply, contact, matched}}
 - POST /api/agent/chat/stream SSE，逐块纯文本 data: 行（保留兼容，小程序默认不走）
 
-所有回答都来自知识库（kb_qa），不调用任何大模型；未命中统一兜底并引导人工客服。
+所有回答都来自知识库（ai_kb_qa），不调用任何大模型；未命中统一兜底并引导人工客服。
 """
 
 import asyncio

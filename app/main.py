@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
+from app.api.ai_chat import router as ai_chat_router
 from app.services import redis_client
 
 logging.basicConfig(
@@ -33,6 +34,7 @@ app.add_middleware(
 )
 
 app.include_router(agent_router)
+app.include_router(ai_chat_router)
 
 
 @app.get("/health")

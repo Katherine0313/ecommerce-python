@@ -1,4 +1,4 @@
-# 杰米多多客服机器人（recommender-python）
+# 杰米多多客服机器人（ecommerce-python）
 
 商城小程序的 AI 客服服务：**FastAPI + 知识库检索**。回答全部来自 MySQL 的 `kb_qa` 表，
 **不调用任何大模型**（微信侧不允许接入），未命中统一兜底并引导人工客服。

@@ -51,5 +51,18 @@ class Settings:
     # 整条回复的超时，必须小于前端 60s 看门狗
     stream_total_timeout_seconds: float = float(_env("AI_STREAM_TOTAL_TIMEOUT", "55"))
 
+    # ===== 大模型（硅基流动，OpenAI 兼容协议）=====
+    siliconflow_api_key: str = _env("SILICONFLOW_API_KEY", "")
+    openai_base_url: str = _env("OPENAI_BASE_URL", "https://api.siliconflow.cn/v1")
+    chat_model: str = _env("CHAT_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
+    chat_temperature: float = float(_env("CHAT_TEMPERATURE", "0.7"))
+    ai_max_output_tokens: int = int(_env("AI_MAX_OUTPUT_TOKENS", "2048"))
+    embedding_model: str = _env("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+    # Java 内部数据接口（/internal/ai/**）：共享密钥 + 网关地址
+    # 本地开发走网关 8080；Docker 里由 AI_INTERNAL_BASE_URL 覆盖为 http://gateway:8080
+    ai_internal_base_url: str = _env("AI_INTERNAL_BASE_URL", "http://127.0.0.1:8080")
+    ai_internal_token: str = _env("AI_INTERNAL_TOKEN", "change-me-in-prod")
+
 
 settings = Settings()

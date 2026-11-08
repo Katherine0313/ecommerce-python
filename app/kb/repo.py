@@ -1,7 +1,7 @@
 """知识库只读仓库 + 命中/未命中埋点。
 
 - 启动后整表加载到内存，60 秒缓存，运营改库后最多 1 分钟生效
-- hit_count / kb_miss 写入失败只记日志，不影响回答
+- hit_count / ai_kb_miss 写入失败只记日志，不影响回答
 """
 
 import asyncio
@@ -44,7 +44,7 @@ def _load_entries() -> list[KbEntry]:
             cursor.execute(
                 """
                 SELECT id, category, question, answer, keywords, priority, hit_count
-                FROM kb_qa
+                FROM ai_kb_qa
                 WHERE status = 1
                 ORDER BY priority DESC, id ASC
                 """
@@ -92,7 +92,7 @@ def _record_hit(entry_id: int) -> None:
     conn = _connect()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("UPDATE kb_qa SET hit_count = hit_count + 1 WHERE id = %s", (entry_id,))
+            cursor.execute("UPDATE ai_kb_qa SET hit_count = hit_count + 1 WHERE id = %s", (entry_id,))
     finally:
         conn.close()
 
@@ -110,7 +110,7 @@ def _record_miss(question: str, user_id: str, session_id: str, best_score: float
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO kb_miss (question, user_id, session_id, best_score)
+                INSERT INTO ai_kb_miss (question, user_id, session_id, best_score)
                 VALUES (%s, %s, %s, %s)
                 """,
                 (question[:255], user_id[:64], (session_id or "")[:64], int(best_score)),

@@ -32,8 +32,8 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
     return value
 
 
-def require_user(authorization: Optional[str]) -> str:
-    """校验令牌并返回用户 ID（subject）。失败抛 AuthError。"""
+def _decode(authorization: Optional[str]) -> dict[str, Any]:
+    """校验签名与有效期，返回完整 payload。失败抛 AuthError。"""
     if not settings.jwt_secret:
         # 配置错误不能当成登录失败，给 500 方便排查
         raise AuthError("服务未配置 JWT_SECRET", 500)
@@ -43,7 +43,7 @@ def require_user(authorization: Optional[str]) -> str:
         raise AuthError("未登录或登录已过期", 401)
 
     try:
-        payload: dict[str, Any] = jwt.decode(
+        return jwt.decode(
             token,
             settings.jwt_secret,
             algorithms=["HS256", "HS384", "HS512"],
@@ -54,6 +54,11 @@ def require_user(authorization: Optional[str]) -> str:
     except jwt.InvalidTokenError:
         raise AuthError("未登录或登录已过期", 401)
 
+
+def require_user(authorization: Optional[str]) -> str:
+    """校验令牌并返回用户 ID（subject）。失败抛 AuthError。"""
+    payload = _decode(authorization)
+
     if payload.get("type") != "user":
         raise AuthError("无权访问", 403)
 
@@ -61,3 +66,27 @@ def require_user(authorization: Optional[str]) -> str:
     if not subject or not subject.isdigit():
         raise AuthError("登录信息不完整，请重新登录", 401)
     return subject
+
+
+def require_token(authorization: Optional[str], expect_type: str) -> dict[str, Any]:
+    """按身份类型校验令牌，返回完整 payload（含 roles / permissions）。
+
+    expect_type: "user"（商城）或 "admin"（后台）。
+    """
+    payload = _decode(authorization)
+    if payload.get("type") != expect_type:
+        raise AuthError("无权访问", 403)
+    subject = str(payload.get("sub") or "").strip()
+    if not subject or not subject.isdigit():
+        raise AuthError("登录信息不完整，请重新登录", 401)
+    return payload
+
+
+def require_admin(authorization: Optional[str], need_perm: str | None = None) -> dict[str, Any]:
+    """后台管理员校验；need_perm 非空时再校验权限码（超管 *:*:* 直接放行）。"""
+    payload = require_token(authorization, "admin")
+    if need_perm:
+        perms = payload.get("permissions") or []
+        if "*:*:*" not in perms and need_perm not in perms:
+            raise AuthError("无权限，无法执行该操作", 403)
+    return payload
