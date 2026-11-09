@@ -23,6 +23,7 @@ from app import internal_client
 from app.ai import intent as intent_mod
 from app.ai import repo, tools as ai_tools
 from app.ai.client import get_llm
+from app.ai.prompts import SUMMARY_RULES, build_system_prompt
 from app.config import settings
 from app.services.redis_client import get_client
 
@@ -43,37 +44,14 @@ _POLICY_KEYWORDS = re.compile(
 _PERSONAL_ORDER = re.compile(r"(我的订单|订单号|我买的|我的物流|我的快递|我下的单|我下单的)")
 # 店铺介绍类问题（卖什么/经营什么/有什么产品）：知识库里有标准答案，首轮强制检索
 _STORE_INTRO = re.compile(
-    r"(卖什么|卖哪些|经营什么|经营哪些|主营|有什么产品|有什么商品|有哪些产品|有哪些商品|卖什么东西)"
+    r"(卖什么|卖哪些|经营什么|经营哪些|主营|有什么产品|有什么商品|有哪些产品|有哪些商品|卖什么东西|"
+    r"口号|slogan|标语|老板|创始人|店名|店铺名|公司名|品牌|联系方式|客服电话)"
 )
 # 优惠券/活动类问题：直接查后台实时配置，避免知识库静态文案与当前活动脱节
 _PROMO_QUERY = re.compile(
     r"(有什么优惠|有哪些优惠|什么优惠|优惠活动|有什么活动|有哪些活动|有活动吗|活动内容|"
     r"有优惠券|有什么券|能领什么券|领券|新人券|满减|立减|秒杀|拼团|促销|打折|买更便宜|划算)"
 )
-
-# 工具调用强约束：追加在角色提示词之后，覆盖所有角色，避免模型用通用政策话术
-# 回答本该查真实数据的问题（如「我的最新订单发货了吗」只回一段发货时效规则）。
-_TOOL_RULES = """
-【工具调用强制规则，优先级高于上文】
-1. 用户提到"我的订单""我的订单记录""订单状态""我的物流""发货了吗""我买的东西"等，必须先调用 query_order；
-2. 用户提到"我的售后""退款进度""退货进度""我的工单"等，必须先调用 query_aftersale；
-3. 用户询问某商品库存/有没有货/还剩多少，必须先调用 query_stock；
-4. 用户询问具体商品的价格、参数、详情，必须先调用 query_product 或 search_product；
-5. 只有与具体订单/商品无关的通用问题（退换货政策、发货时效规则、支付方式、发票规则等）才用 search_knowledge；其中"我今天下单能发货吗""多久发货""几点前下单当天发"这类发货时效问题必须调 search_knowledge 并用知识库答案回答，禁止用通用问候或客套话敷衍；
-6. 禁止在未调用工具的情况下编造订单号、物流单号、库存、价格等任何业务数据；
-7. 工具返回空结果时如实告知"没查到相关记录"，并给出下一步建议，不要用政策话术替代；
-8. 用户按品类找商品（"推荐手机""有什么平板""看看相机"）时，search_products / recommend_product 的关键词只传品类名本身（手机/电脑/平板/耳机音箱/手表/相机/数码配件/智能家居），不要传"推荐手机"这类整句、不要加"推荐"二字，否则会把手机壳等配件一起搜出来；
-9. 用户给出订单号（如"订单号 2026xxx，发货了吗"）时，必须把订单号原样作为 query_order 的 keyword 传入；给出商品名时同理传商品名；只有完全没提订单、也没提商品时才不传 keyword（默认查最近 5 笔）；
-10. 用户问"你们店里卖什么""经营什么""有什么产品/商品"这类店铺介绍类问题时，先调用 search_knowledge（知识库有店铺与商品分类）；只有问"有什么热销的""推荐几款"时才用 search_products 取商品；两类结果都为空再如实说明。
-11. 禁止编造券名称、面额、门槛、有效期或活动商品；没有依据的券和活动一律视为不存在，规则细节（能否叠加、如何使用）不确定时建议用户查看「我的-优惠券」。
-"""
-
-# 工具执行后的最终汇总约束：防止模型看到 ToolMessage 后再次想调工具、产出空内容
-# 注意：这句话会作为一条消息追加在后面，必须显式禁止复述，否则模型会回「好的，已按要求…」
-_SUMMARY_RULES = """
-（内部要求，不要复述这句话，也不要回应这条要求）请直接基于上面的工具结果回答用户刚才的问题，
-用自然中文，不要调用工具，不要贴原始 JSON；工具结果为空时如实说明没查到并给出下一步建议。"""
-
 
 # ---------- LangGraph 状态 ----------
 
@@ -411,7 +389,7 @@ async def chat_stream(
         history = repo.load_history(conversation_id, max_ctx) if not is_new else []
         # 注入店铺真实品类，避免模型追问时编出「送人/宿舍用/运动/厨房用品」这类店里没有的品类
         catalog = await ai_tools.catalog_hint()
-        messages: list[BaseMessage] = [SystemMessage(content=system_message + catalog + _TOOL_RULES)]
+        messages: list[BaseMessage] = [SystemMessage(content=build_system_prompt(system_message, catalog))]
         for h in history:
             r = h.get("role")
             if r == "user":
@@ -481,7 +459,7 @@ async def chat_stream(
         # 12. 产出最终回复
         if final_state.get("need_summary"):
             # 工具已执行：流式汇总（bind_tools 的完整消息已在 state 里）
-            summary_messages = list(final_state["messages"]) + [HumanMessage(content=_SUMMARY_RULES)]
+            summary_messages = list(final_state["messages"]) + [HumanMessage(content=SUMMARY_RULES)]
             # 模型偶发只返回空内容（尤其带 ToolMessage 时），空回答重试一次，仍空则给兜底话术，
             # 避免前端气泡空白、看起来像"AI 消失了"
             for attempt in range(2):

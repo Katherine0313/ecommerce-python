@@ -230,6 +230,7 @@ def mall_messages(
     rows = repo.list_messages(conv_id)
     for r in rows:
         r["createdAt"] = _fmt(r.pop("created_at"))
+        r["senderAvatar"] = r.pop("sender_avatar", None)
     return {"code": 0, "message": "ok", "data": rows, "humanMode": bool(conv.get("human_mode"))}
 
 
@@ -308,6 +309,7 @@ def admin_messages(conv_id: int, authorization: Optional[str] = Header(default=N
     rows = repo.list_messages(conv_id)
     for r in rows:
         r["createdAt"] = r.pop("created_at").strftime("%Y-%m-%d %H:%M:%S") if r.get("created_at") else None
+        r["senderAvatar"] = r.pop("sender_avatar", None)
     return {"code": 0, "message": "ok", "data": rows}
 
 
@@ -431,6 +433,7 @@ def admin_human_messages(conv_id: int, authorization: Optional[str] = Header(def
     rows = repo.list_messages(conv_id)
     for r in rows:
         r["createdAt"] = _fmt(r.pop("created_at"))
+        r["senderAvatar"] = r.pop("sender_avatar", None)
     return {
         "code": 0,
         "message": "ok",

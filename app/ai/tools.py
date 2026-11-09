@@ -246,7 +246,8 @@ async def knowledge_answer(question: str) -> Optional[str]:
 
 @tool
 async def search_knowledge(question: str) -> str:
-    """检索客服知识库，回答退换货、发货时间、尺码、运费、正品保障等规则类问题。"""
+    """检索店铺知识库，回答退换货、发货时间、运费、正品保障等规则类问题，
+    以及店铺介绍、口号、老板/创始人、店名、品牌、联系方式等店铺信息类问题。"""
     entry = await _match_entry(question)
     if not entry:
         return json.dumps({"matched": False}, ensure_ascii=False)

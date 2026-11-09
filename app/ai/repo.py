@@ -272,11 +272,25 @@ def load_history(conv_id: int, max_messages: int) -> list[dict[str, Any]]:
 
 
 def list_messages(conv_id: int, limit: int = 200) -> list[dict[str, Any]]:
-    """前端拉历史：只要 user / assistant 两种，tool 消息不展示。"""
+    """前端拉历史：只要 user / assistant 两种，tool 消息不展示。
+
+    头像按发送者 ID 归属分表取，禁止串表：
+    - user_id 非空（商城/小程序客户，含人工会话里的客户发言）→ user.avatar
+    - admin_id 非空（后台管理员：自己对话的发言 + 人工客服回复）→ admin.admin_avatar
+    - 两者都空（AI 自动回复）→ NULL，前端回退 AI 默认头像
+    """
     return _query_all(
-        """SELECT id, type, content, created_at FROM ai_chat_message
-           WHERE conversation_id = %s AND type IN ('user', 'assistant')
-           ORDER BY id LIMIT %s""",
+        """SELECT m.id, m.type, m.content, m.created_at,
+                  CASE
+                    WHEN m.user_id IS NOT NULL THEN u.avatar
+                    WHEN m.admin_id IS NOT NULL THEN a.admin_avatar
+                    ELSE NULL
+                  END AS sender_avatar
+           FROM ai_chat_message m
+           LEFT JOIN `user` u ON u.id = m.user_id
+           LEFT JOIN `admin` a ON a.id = m.admin_id
+           WHERE m.conversation_id = %s AND m.type IN ('user', 'assistant')
+           ORDER BY m.id LIMIT %s""",
         (conv_id, limit),
     )
 
