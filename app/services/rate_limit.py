@@ -49,3 +49,23 @@ async def check_and_consume(user_id: str) -> tuple[bool, int, int]:
         max(0, settings.rate_limit_per_window - window_count),
         max(0, settings.rate_limit_per_day - day_count),
     )
+
+
+async def check_and_consume_with_window(user_id: str, window_seconds: int, limit: int) -> tuple[bool, int]:
+    """独立固定窗口限流（不占对话的每日额度），如 AI 生图每分钟 N 次。
+
+    返回 (是否放行, 窗口内剩余)；Redis 异常时直接放行。
+    """
+    window = max(1, window_seconds)
+    bucket = int(time.time() // window)
+    key = f"{_WINDOW_PREFIX}{user_id}:{bucket}"
+    try:
+        client = get_client()
+        async with client.pipeline(transaction=False) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, window * 2)
+            count, _ = await pipe.execute()
+    except Exception:
+        logger.warning("限流检查失败，放行 user=%s", user_id, exc_info=True)
+        return True, limit
+    return count <= limit, max(0, limit - count)

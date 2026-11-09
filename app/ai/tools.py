@@ -295,7 +295,7 @@ async def query_aftersale(aftersale_id: int) -> str:
 
 @tool
 async def generate_copy(product_id: int, scene: str = "all") -> str:
-    """为商品生成营销文案。scene: title(名称) / subtitle(副标题) / description(详情) / all(全部)。"""
+    """为商品生成营销文案。scene: name(名称) / subTitle(副标题) / title(主标题，≤30字) / description(详情) / all(全部)。"""
     product = await internal_client.get_product(product_id)
     if not product:
         return json.dumps({"found": False, "message": "商品不存在"}, ensure_ascii=False)

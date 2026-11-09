@@ -144,3 +144,74 @@ async def record_miss(question: str, user_id: str, session_id: str, best_score: 
         await asyncio.to_thread(_record_miss, question, user_id, session_id, best_score)
     except Exception:
         logger.warning("写入知识库未命中记录失败", exc_info=True)
+
+
+# ---------- Excel 批量导入（app/kb/importer.py 配套，写路径） ----------
+
+def list_kb_keys() -> set[tuple[str, str, str]]:
+    """全表 (scope, category, question) 键集合：导入预检判重用（表小，全量拉取）。"""
+    conn = _connect()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT scope, category, question FROM ai_kb_qa")
+            return {(r["scope"], r["category"], r["question"]) for r in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
+def upsert_kb_entries_batch(rows: list[dict]) -> tuple[int, int]:
+    """批量 upsert（executemany 单事务，失败整体回滚）。
+
+    判重键 (scope, category, question) 命中唯一键 uk_ai_kb_scope_category_question 时
+    覆盖答案/关键词/优先级/状态，hit_count 不清零。返回 (新增数, 更新数)。
+    """
+    if not rows:
+        return 0, 0
+    existing = list_kb_keys()
+    inserted = sum(1 for r in rows if (r["scope"], r["category"], r["question"]) not in existing)
+    updated = len(rows) - inserted
+    conn = _connect()
+    try:
+        with conn.cursor() as cursor:
+            conn.begin()
+            cursor.executemany(
+                """
+                INSERT INTO ai_kb_qa (scope, category, question, answer, keywords, priority, status)
+                VALUES (%(scope)s, %(category)s, %(question)s, %(answer)s, %(keywords)s, %(priority)s, %(status)s)
+                ON DUPLICATE KEY UPDATE
+                    answer = VALUES(answer),
+                    keywords = VALUES(keywords),
+                    priority = VALUES(priority),
+                    status = VALUES(status)
+                """,
+                [
+                    {
+                        "scope": r["scope"],
+                        "category": r["category"],
+                        "question": r["question"],
+                        "answer": r["answer"],
+                        "keywords": r["keywords"],
+                        "priority": int(r["priority"]),
+                        "status": int(r["status"]),
+                    }
+                    for r in rows
+                ],
+            )
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return inserted, updated
+
+
+def clear_kb_cache(scopes: Optional[list[str]] = None) -> None:
+    """导入/变更后主动清缓存，新条目立即生效（否则最多延迟 kb_cache_ttl 秒）。"""
+    if scopes:
+        for key in scopes:
+            _scope_cache.pop(key, None)
+            _scope_cache_at.pop(key, None)
+    else:
+        _scope_cache.clear()
+        _scope_cache_at.clear()

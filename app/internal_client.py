@@ -91,11 +91,18 @@ async def search_products(
     return await _get("/internal/ai/products", params)
 
 
-_FIELD_TO_JAVA = {"name": "name", "sub_title": "subTitle", "subTitle": "subTitle", "description": "description"}
+_FIELD_TO_JAVA = {
+    "name": "name",
+    "sub_title": "subTitle",
+    "subTitle": "subTitle",
+    "description": "description",
+    "title": "title",
+    "image": "image",
+}
 
 
 async def update_product(product_id: int, fields: dict[str, Any]) -> dict:
-    """白名单文案字段更新：name / subTitle / description（自动转 Java 驼峰）。"""
+    """白名单文案字段更新：name / subTitle / title / description / image（自动转 Java 驼峰）。"""
     payload = {_FIELD_TO_JAVA.get(k, k): v for k, v in fields.items() if k in _FIELD_TO_JAVA}
     return await _put(f"/internal/ai/product/{product_id}", payload)
 

@@ -66,5 +66,17 @@ class Settings:
     ai_internal_base_url: str = _env("AI_INTERNAL_BASE_URL", "http://127.0.0.1:8080")
     ai_internal_token: str = _env("AI_INTERNAL_TOKEN", "change-me-in-prod")
 
+    # 知识库 Excel 批量导入：上传文件归档目录（只作留档/追溯，AI 读库不读文件）
+    kb_import_dir: str = _env("KB_IMPORT_DIR", "upload/excel/kb")
+
+    # ===== AI 生图（硅基流动 /v1/images/generations，OpenAI 兼容）=====
+    image_model: str = _env("IMAGE_MODEL", "Kwai-Kolors/Kolors")
+    # 前端「快速模式」可选模型（更快更便宜）
+    image_model_fast: str = _env("IMAGE_MODEL_FAST", "black-forest-labs/FLUX.1-schnell")
+    # 生成图落盘目录：与 Java UploadServiceImpl 的 upload/image/ 约定平级，url 前缀对应 /image/**
+    ai_image_dir: str = _env("AI_IMAGE_DIR", "upload/image/ai")
+    # 同一运营每分钟生图次数上限
+    image_rate_per_minute: int = int(_env("AI_IMAGE_RATE_PER_MINUTE", "5"))
+
 
 settings = Settings()

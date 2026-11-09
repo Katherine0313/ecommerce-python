@@ -26,6 +26,11 @@ _warm_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global _warm_task
+    # 知识库导入归档目录 / AI 生图落盘目录：启动即建好，免得首次上传才创建
+    from pathlib import Path
+    from app.config import settings
+    for directory in (settings.kb_import_dir, settings.ai_image_dir):
+        Path(directory).mkdir(parents=True, exist_ok=True)
     # 后台预热知识库语义索引，失败不影响启动（检索会自动退化为词面匹配）
     try:
         entries = await load_entries()
