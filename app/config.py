@@ -71,8 +71,8 @@ class Settings:
 
     # ===== AI 生图（硅基流动 /v1/images/generations，OpenAI 兼容）=====
     image_model: str = _env("IMAGE_MODEL", "Kwai-Kolors/Kolors")
-    # 前端「快速模式」可选模型（更快更便宜）
-    image_model_fast: str = _env("IMAGE_MODEL_FAST", "black-forest-labs/FLUX.1-schnell")
+    # 前端「快速模式」可选模型；FLUX.1-schnell 在当前硅基流动 key 下 403，统一用 Kolors
+    image_model_fast: str = _env("IMAGE_MODEL_FAST", "Kwai-Kolors/Kolors")
     # 生成图落盘目录：与 Java UploadServiceImpl 的 upload/image/ 约定平级，url 前缀对应 /image/**
     ai_image_dir: str = _env("AI_IMAGE_DIR", "upload/image/ai")
     # 同一运营每分钟生图次数上限
