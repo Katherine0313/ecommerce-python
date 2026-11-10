@@ -23,7 +23,7 @@ from app import internal_client
 from app.ai import intent as intent_mod
 from app.ai import repo, tools as ai_tools
 from app.ai.client import get_llm
-from app.ai.prompts import SUMMARY_RULES, build_system_prompt
+from app.ai.prompts import NO_AI_STYLE, SUMMARY_RULES, build_system_prompt
 from app.config import settings
 from app.services.redis_client import get_client
 
@@ -40,6 +40,14 @@ _POLICY_KEYWORDS = re.compile(
     r"(发货|配送|多久到|几天到|物流|快递|运费|包邮|退货|退款|换货|售后|"
     r"发票|开票|支付方式|付款方式|优惠券|会员|积分|保修|质保)"
 )
+# 投诉/不满类问题：知识库里有安抚话术，命中先直答，避免模型自由发挥或漏掉道歉
+_COMPLAINT_KEYWORDS = re.compile(
+    r"(投诉|差评|举报|维权|12315|消协|质量太差|质量问题|态度差|态度不好|"
+    r"假货|翻新|发错货|少发|漏发|破损|磕碰|开不了机|坏了|漏液|花屏|鼓包|"
+    r"诱导好评|信息泄露|承诺没兑现|不给退|不给保修|赔不赔)"
+)
+# 人工/客服类问题：知识库已有标准答案（在线时间、如何联系、能做什么），命中直答不调模型
+_HUMAN_INFO = re.compile(r"(人工|真人客服|客服)")
 # 涉及本人订单时优先查订单，不强制知识库
 _PERSONAL_ORDER = re.compile(r"(我的订单|订单号|我买的|我的物流|我的快递|我下的单|我下单的)")
 # 店铺介绍类问题（卖什么/经营什么/有什么产品）：知识库里有标准答案，首轮强制检索
@@ -52,6 +60,18 @@ _PROMO_QUERY = re.compile(
     r"(有什么优惠|有哪些优惠|什么优惠|优惠活动|有什么活动|有哪些活动|有活动吗|活动内容|"
     r"有优惠券|有什么券|能领什么券|领券|新人券|满减|立减|秒杀|拼团|促销|打折|买更便宜|划算)"
 )
+
+# 小程序端要求对外文案不出现「AI」：流式分片逐块过滤；尾部单字母留到下一块拼接，
+# 避免「A」「I」被 token 拆开时漏过滤。
+_AI_WORD = re.compile(r"(?<![A-Za-z])AI(?![A-Za-z])", re.IGNORECASE)
+
+
+def _mask_ai(text: str) -> str:
+    # 先替换常见自称，避免出现「智能 客服小助手」这种别扭表述
+    text = re.sub(r"(?i)(?<![A-Za-z])AI\s*客服", "客服", text)
+    text = re.sub(r"(?i)(?<![A-Za-z])AI\s*助手", "客服助手", text)
+    return _AI_WORD.sub("智能", text)
+
 
 # ---------- LangGraph 状态 ----------
 
@@ -96,10 +116,15 @@ def _last_user_text(state: AgentState) -> str:
 
 
 def _is_kb_direct(text: str) -> bool:
-    """政策/店铺介绍类问题走知识库直答（不经过模型改写问题）。"""
+    """政策/店铺介绍/投诉安抚/人工客服类问题走知识库直答（不经过模型改写问题）。"""
     if _PERSONAL_ORDER.search(text):
         return False
-    return bool(_POLICY_KEYWORDS.search(text) or _STORE_INTRO.search(text))
+    return bool(
+        _POLICY_KEYWORDS.search(text)
+        or _STORE_INTRO.search(text)
+        or _COMPLAINT_KEYWORDS.search(text)
+        or _HUMAN_INFO.search(text)
+    )
 
 
 def _forced_tool(state: AgentState, allowed: set[str]) -> Optional[dict]:
@@ -275,6 +300,7 @@ async def chat_stream(
     anonymous_id: Optional[str] = None,
     admin_id: Optional[int] = None,
     admin_perms: Optional[list[str]] = None,
+    hide_ai: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """对话主流程，yield SSE 事件 dict。
 
@@ -322,10 +348,13 @@ async def chat_stream(
         if not role:
             role = repo.get_role(1 if source == "mall" else 2)  # 内置默认
         if not role:
-            yield {"type": "error", "message": "AI 角色未配置", "code": 500}
+            yield {"type": "error", "message": "客服角色未配置", "code": 500}
             return
         role_id = role["id"]
         system_message = (conv or {}).get("system_message") or role.get("system_message") or ""
+        # 小程序端不展示「AI」：角色设定里可能自带「AI 客服」字样，追加表达约束做第一层拦截
+        if hide_ai:
+            system_message += NO_AI_STYLE
 
         # 3. 新建会话（首轮）
         is_new = False
@@ -337,6 +366,21 @@ async def chat_stream(
             is_new = True
 
         yield {"type": "meta", "conversationId": conversation_id, "roleId": role_id}
+
+        # 3.5 转人工：先给确认卡片，用户点击后才真正切人工会话
+        if source == "mall" and intent_mod.match_handoff(message):
+            repo.save_message(
+                conversation_id, "user", message,
+                admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id,
+            )
+            reply = "可以的，点击下方「联系人工客服」即可接入，工作时间 9:00~18:00。"
+            repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
+            # 只下发可选卡片，不置 human_mode；用户点击卡片再调 /api/mall/ai/handoff
+            yield {"type": "handoff_offer", "conversationId": conversation_id, "text": reply}
+            yield {"type": "token", "text": reply}
+            yield {"type": "done"}
+            _log("chat", True)
+            return
 
         # 4. 待确认动作分支（仅后台有危险写）
         pending = await _load_pending(conversation_id)
@@ -424,7 +468,7 @@ async def chat_stream(
 
         # 9. 固定话术（闲聊）
         if final_state.get("fixed_reply"):
-            reply = final_state["fixed_reply"]
+            reply = _mask_ai(final_state["fixed_reply"]) if hide_ai else final_state["fixed_reply"]
             repo.save_message(conversation_id, "user", message, admin_id=admin_id, user_id=user_id, anonymous_id=anonymous_id)
             repo.save_message(conversation_id, "assistant", reply, role_id=role_id)
             repo.touch_conversation(conversation_id, title=message[:30] if is_new else None)
@@ -465,13 +509,27 @@ async def chat_stream(
             for attempt in range(2):
                 answer_parts.clear()
                 llm = get_llm(streaming=True)
+                carry = ""
                 async for chunk in llm.astream(summary_messages):
                     piece = chunk.content
                     if isinstance(piece, list):
                         piece = "".join(str(p.get("text", "")) for p in piece if isinstance(p, dict))
-                    if piece:
-                        answer_parts.append(str(piece))
-                        yield {"type": "token", "text": str(piece)}
+                    if not piece:
+                        continue
+                    text = str(piece)
+                    if hide_ai:
+                        text = carry + text
+                        carry = text[-1] if text[-1] in "Aa" else ""
+                        if carry:
+                            text = text[:-1]
+                        text = _mask_ai(text)
+                    if text:
+                        answer_parts.append(text)
+                        yield {"type": "token", "text": text}
+                if hide_ai and carry:
+                    text = _mask_ai(carry)
+                    answer_parts.append(text)
+                    yield {"type": "token", "text": text}
                 if "".join(answer_parts).strip():
                     break
                 logger.warning("汇总回答为空，重试 conv=%s attempt=%s", conversation_id, attempt + 1)
@@ -481,6 +539,8 @@ async def chat_stream(
                 yield {"type": "token", "text": fallback}
         else:
             reply = final_state.get("answer") or "我暂时没想好怎么回答，换个说法试试？"
+            if hide_ai:
+                reply = _mask_ai(reply)
             answer_parts.append(reply)
             # 非流式答案按句号粗切，模拟打字机效果
             for piece in re.split(r"(?<=[。！？!?\n])", reply):
@@ -498,4 +558,4 @@ async def chat_stream(
     except Exception as exc:
         logger.exception("AI 对话失败 source=%s conv=%s", source, conversation_id)
         _log("chat", False, str(exc))
-        yield {"type": "error", "message": "AI 服务暂时开小差了，请稍后再试", "code": 500}
+        yield {"type": "error", "message": "服务暂时开小差了，请稍后再试", "code": 500}

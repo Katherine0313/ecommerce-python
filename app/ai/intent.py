@@ -20,6 +20,27 @@ _GREETING = re.compile(
 _DANGER_VERB = re.compile(r"(修改|改成|改为|换成|换成是|更名|改成叫)")
 _DANGER_FIELD = re.compile(r"(商品名称|商品名|标题|副标题|详情|描述|文案|description|sub_title|name)")
 
+# 转人工：要求接入人工，而不是咨询「人工客服几点上班」这类信息
+_HANDOFF = re.compile(r"(转人工|转接人工|找人工|要人工|叫人工|请人工|人工服务|真人客服|人工客服)")
+_HANDOFF_INFO = re.compile(r"(几点|时间|上班|下班|电话|在哪|怎么联系|如何联系|能做什么|是谁|收费|机器人|真人吗)")
+# 只说一个词也要能转：用户往往直接打「人工」「客服」
+_BARE_HANDOFF = {
+    "人工", "人工客服", "人工服务", "真人", "真人客服", "客服",
+    "转人工", "转接人工", "要人工", "找人工", "叫人工", "请人工", "我要人工", "我要转人工",
+}
+
+
+def match_handoff(message: str) -> bool:
+    """是否为「转人工」诉求；排除询问人工客服信息的问题。"""
+    text = (message or "").strip()
+    if not text or len(text) > 30:
+        return False
+    if _HANDOFF_INFO.search(text):
+        return False
+    if re.sub(r"[\s!！.。?？~～,，、]+", "", text) in _BARE_HANDOFF:
+        return True
+    return bool(_HANDOFF.search(text))
+
 
 def classify(message: str) -> Intent:
     text = (message or "").strip()
@@ -33,6 +54,6 @@ def classify(message: str) -> Intent:
 
 
 CHAT_REPLY = (
-    "你好呀，我是杰米电商的 AI 客服小助手～可以帮你查商品、找好物、"
+    "你好呀，我是杰米电商的客服小助手～可以帮你查商品、找好物、"
     "查订单进度、看物流，也能解答退换货问题。有什么可以帮你的吗？"
 )

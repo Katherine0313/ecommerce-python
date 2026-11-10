@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.agent import router as agent_router
 from app.api.ai_chat import router as ai_chat_router
 from app.kb import embedding as kb_embedding
 from app.kb.repo import load_entries
@@ -52,7 +51,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(agent_router)
 app.include_router(ai_chat_router)
 
 

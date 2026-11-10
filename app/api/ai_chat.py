@@ -100,6 +100,8 @@ async def mall_chat_stream(
             role_id=body.get("roleId"),
             user_id=uid,
             anonymous_id=anon_id,
+            # 小程序端要求界面不出现「AI」字样；网页商城保持原样
+            hide_ai=str(body.get("client") or "") == "miniapp",
         ):
             yield _event(ev)
 
@@ -479,7 +481,7 @@ def admin_human_close(conv_id: int, authorization: Optional[str] = Header(defaul
         return JSONResponse(status_code=404, content={"code": 404, "message": "会话不存在", "data": None})
     if conv.get("human_mode"):
         repo.set_human_mode(conv_id, False)
-        repo.save_message(conv_id, "assistant", "人工客服已结束本次会话，如有其他问题可以继续咨询 AI 客服。")
+        repo.save_message(conv_id, "assistant", "人工客服已结束本次会话，如有其他问题可以继续咨询客服助手。")
         repo.touch_conversation(conv_id)
     return {"code": 0, "message": "ok", "data": {"conversationId": conv_id, "humanMode": False}}
 
