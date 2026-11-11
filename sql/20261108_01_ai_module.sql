@@ -1,10 +1,10 @@
 -- ============================================================
 -- AI 客服模块建库脚本（对应 docs/ai 设计方案 §7 + §9.4）
 -- 内容：9 张 ai_ 表 + ai_kb_qa 加 embedding 列 + 9 个工具种子
---       + 2 个内置聊天角色 + 菜单/按钮权限记录 + 角色授权
--- 幂等：可重复执行。本地执行后必须同步生产库（项目硬规则）。
--- 说明：P1 的三张表（ai_chat_role_knowledge / ai_kb_dataset /
---       ai_kb_segment）一并建好，避免二次同步生产。
+--       + 2 个内置聊天角色
+--       菜单/权限/角色授权属于 Java 后台，由后端自己的 Flyway/Liquibase 管理，
+--       不在 Python AI 服务的迁移职责内。
+-- 幂等：可重复执行。
 -- ============================================================
 
 -- ---------- 7.1 工具定义表 ----------
@@ -153,59 +153,6 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 -- ============================================================
--- 菜单与权限（§9.4）：目录 1000，菜单 1001~1006，按钮 1010~1017
--- 实际一级菜单最大 sort_order 为 11（系统监控），AI 客服取 12
--- ============================================================
-INSERT INTO admin_menu (id, parent_id, menu_name, menu_type, path, component, perms, icon, sort_order, visible, status, create_time, update_time)
-VALUES (1000, 0, 'AI 客服', 'M', '/ai', NULL, NULL, 'RobotOutlined', 12, 1, 1, NOW(), NOW())
-ON DUPLICATE KEY UPDATE
-  parent_id = VALUES(parent_id), menu_name = VALUES(menu_name), menu_type = VALUES(menu_type),
-  path = VALUES(path), perms = VALUES(perms), icon = VALUES(icon),
-  sort_order = VALUES(sort_order), visible = VALUES(visible), status = VALUES(status), update_time = NOW();
-
-INSERT INTO admin_menu (id, parent_id, menu_name, menu_type, path, component, perms, icon, sort_order, visible, status, create_time, update_time)
-VALUES
-  (1001, 1000, 'AI 对话',      'C', '/ai/chat',      NULL, 'ai:chat:use',       NULL, 1, 1, 1, NOW(), NOW()),
-  (1002, 1000, '商品文案助手', 'C', '/ai/copy',      NULL, 'ai:copy:generate',  NULL, 2, 1, 1, NOW(), NOW()),
-  (1003, 1000, '聊天角色',     'C', '/ai/roles',     NULL, 'ai:role:list',      NULL, 3, 1, 1, NOW(), NOW()),
-  (1004, 1000, '工具管理',     'C', '/ai/tools',     NULL, 'ai:tool:list',      NULL, 4, 1, 1, NOW(), NOW()),
-  (1005, 1000, '知识库管理',   'C', '/ai/knowledge', NULL, 'ai:knowledge:list', NULL, 5, 1, 1, NOW(), NOW()),
-  (1006, 1000, '聊天管理',     'C', '/ai/admin',     NULL, 'ai:chat:admin',     NULL, 6, 1, 1, NOW(), NOW())
-ON DUPLICATE KEY UPDATE
-  parent_id = VALUES(parent_id), menu_name = VALUES(menu_name), menu_type = VALUES(menu_type),
-  path = VALUES(path), perms = VALUES(perms),
-  sort_order = VALUES(sort_order), visible = VALUES(visible), status = VALUES(status), update_time = NOW();
-
--- 工具权限码按钮（F 类型）。generate_copy 的权限码 ai:copy:generate 已由菜单 1002 承载，不重复建。
-INSERT INTO admin_menu (id, parent_id, menu_name, menu_type, path, component, perms, icon, sort_order, visible, status, create_time, update_time)
-VALUES
-  (1010, 1001, 'AI 查询商品',   'F', NULL, NULL, 'ai:tool:query',     NULL, 1, 1, 1, NOW(), NOW()),
-  (1011, 1001, 'AI 搜索商品',   'F', NULL, NULL, 'ai:tool:search',    NULL, 2, 1, 1, NOW(), NOW()),
-  (1012, 1001, 'AI 推荐商品',   'F', NULL, NULL, 'ai:tool:recommend', NULL, 3, 1, 1, NOW(), NOW()),
-  (1013, 1001, 'AI 知识库检索', 'F', NULL, NULL, 'ai:tool:knowledge', NULL, 4, 1, 1, NOW(), NOW()),
-  (1014, 1001, 'AI 查询库存',   'F', NULL, NULL, 'ai:tool:stock',     NULL, 5, 1, 1, NOW(), NOW()),
-  (1015, 1001, 'AI 查询订单',   'F', NULL, NULL, 'ai:tool:order',     NULL, 6, 1, 1, NOW(), NOW()),
-  (1016, 1001, 'AI 查询售后',   'F', NULL, NULL, 'ai:tool:aftersale', NULL, 7, 1, 1, NOW(), NOW()),
-  (1017, 1002, 'AI 修改商品',   'F', NULL, NULL, 'ai:tool:update',    NULL, 1, 1, 1, NOW(), NOW())
-ON DUPLICATE KEY UPDATE
-  parent_id = VALUES(parent_id), menu_name = VALUES(menu_name), menu_type = VALUES(menu_type),
-  perms = VALUES(perms), sort_order = VALUES(sort_order), visible = VALUES(visible),
-  status = VALUES(status), update_time = NOW();
-
--- 角色授权：超管 + 运营全有；客服仅「AI 对话」；仓管无
-INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id
-FROM admin_role r
-JOIN admin_menu m ON m.id BETWEEN 1000 AND 1017
-WHERE r.role_key IN ('admin', 'operator');
-
-INSERT IGNORE INTO admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id
-FROM admin_role r
-JOIN admin_menu m ON m.id IN (1000, 1001)
-WHERE r.role_key = 'service';
-
--- ============================================================
 -- 工具种子（9 个）
 -- ============================================================
 INSERT INTO ai_tool (id, name, description, perm_code, scope, status, sort_order, created_at, updated_at) VALUES
@@ -230,7 +177,7 @@ INSERT INTO ai_chat_role (id, name, avatar, description, category, system_messag
    '你是「杰米多多」商城的 AI 客服小助手。职责：1. 解答顾客关于商品、库存、订单、售后的问题；2. 根据顾客需求主动推荐合适的商品；3. 回答客服类问题（退换货、发货、运费等）。规则：商品信息必须以工具查询结果为准，禁止编造价格、库存；语气亲切简洁，单次回答控制在 200 字以内；无法解决的问题引导顾客联系人工客服；不回答与购物无关的问题。',
    NULL, 1, 1, 1, NOW(), NOW()),
   (2, '运营助手', NULL, '后台运营 AI 助手，查数据、生成文案、辅助商品维护', '运营',
-   '你是电商后台的运营助手。能力：查询商品、库存、订单、售后数据，生成商品营销文案，经运营确认后修改商品文案字段。规则：所有数据以工具查询结果为准，禁止编造；执行修改类操作前必须先用一句话说明将要变更的内容并等待用户确认；回答简洁专业，突出关键数据；不回答与电商运营无关的问题（如写作、翻译、编程、天气、时事、娱乐八卦等），礼貌拒绝并引导用户回到商品、订单、库存、售后等业务话题。',
+   '你是电商后台的运营助手。能力：查询商品、库存、订单、售后数据，生成商品营销文案，经运营确认后修改商品文案字段。规则：所有数据以工具查询结果为准，禁止编造；执行修改类操作前必须先用一句话说明将要变更的内容并等待用户确认；回答简洁专业，突出关键数据；不回答与电商运营无关的问题。',
    NULL, 1, 1, 2, NOW(), NOW())
 ON DUPLICATE KEY UPDATE
   name = VALUES(name), description = VALUES(description), category = VALUES(category),

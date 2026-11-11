@@ -1,0 +1,92 @@
+# 生产部署：MySQL + Redis + Python AI 客服服务
+#
+# 说明：
+#   - Java 后端（Gateway + 微服务 + Nacos）不在本 compose 里，独立启动。
+#     如果后端也想一起进容器，后续再加 e-commerce-boot 各个 service。
+#   - ai-service 通过 host.docker.internal 访问宿主机上的 Gateway(8080)；
+#     生产有独立网络后把 AI_INTERNAL_BASE_URL 改成网关容器服务名。
+#   - MySQL/Redis 数据挂 volume，容器重建不丢数据。
+#
+# 首次启动（会自动跑 sql/ 下的迁移脚本建表）：
+#     docker compose up -d --build
+# 查看日志：
+#     docker compose logs -f ai-service
+# 停掉并删除数据卷（慎用！会清空知识库和会话）：
+#     docker compose down -v
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ecommerce-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: e_commerce_db
+      MYSQL_USER: e_commerce_db
+      MYSQL_PASSWORD: "123456"
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ecommerce-ai:latest
+    container_name: ecommerce-ai
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 里的本地地址，走 compose 内服务名
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: e_commerce_db
+      DB_USERNAME: e_commerce_db
+      DB_PASSWORD: "123456"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # 访问宿主机上的 Java Gateway（生产改服务名）
+      AI_INTERNAL_BASE_URL: http://host.docker.internal:8080
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./upload:/app/upload
+    extra_hosts:
+      # Windows Docker Desktop host.docker.internal 默认有，保险起见显式加
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mysql_data:
+  redis_data:
