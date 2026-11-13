@@ -79,10 +79,15 @@ services:
       REDIS_PORT: "6379"
       # 访问宿主机上的 Java Gateway（生产改服务名）
       AI_INTERNAL_BASE_URL: http://host.docker.internal:8080
+      # 容器内是 Linux，.env 里的 Windows 路径（d:\...）会被当成文件名建到 /app 下，
+      # 导致 nginx/网关按 /image/ai/ 取不到文件（404）。容器内固定写挂载目录
+      AI_IMAGE_DIR: /app/upload/image/ai
     ports:
       - "8000:8000"
     volumes:
-      - ./upload:/app/upload
+      # 与 Java 后端共用同一份 upload 目录：product-service 从自己工作目录下的 upload/image/
+      # 读静态资源，Python 生图落到 Java 的 upload/image/ai/，两边同步
+      - D:/study/my-workspace/wechat-workspace/e-commerce-boot/upload:/app/upload
     extra_hosts:
       # Windows Docker Desktop host.docker.internal 默认有，保险起见显式加
       - "host.docker.internal:host-gateway"

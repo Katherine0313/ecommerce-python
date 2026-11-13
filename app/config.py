@@ -63,8 +63,10 @@ class Settings:
 
     # Java 内部数据接口（/internal/ai/**）：共享密钥 + 网关地址
     # 本地开发走网关 8080；Docker 里由 AI_INTERNAL_BASE_URL 覆盖为 http://gateway:8080
+    # 共享密钥不给兜底默认值：未配置时调用方直接报错（fail-closed），
+    # 避免两边都退回同一个可猜测默认值、内部接口实际无鉴权
     ai_internal_base_url: str = _env("AI_INTERNAL_BASE_URL", "http://127.0.0.1:8080")
-    ai_internal_token: str = _env("AI_INTERNAL_TOKEN", "change-me-in-prod")
+    ai_internal_token: str = _env("AI_INTERNAL_TOKEN", "")
 
     # 知识库 Excel 批量导入：上传文件归档目录（只作留档/追溯，AI 读库不读文件）
     kb_import_dir: str = _env("KB_IMPORT_DIR", "upload/excel/kb")

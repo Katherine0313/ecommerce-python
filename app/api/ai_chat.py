@@ -486,6 +486,19 @@ def admin_human_close(conv_id: int, authorization: Optional[str] = Header(defaul
     return {"code": 0, "message": "ok", "data": {"conversationId": conv_id, "humanMode": False}}
 
 
+@router.delete("/api/admin/ai/human/conversations/{conv_id}")
+def admin_human_delete(conv_id: int, authorization: Optional[str] = Header(default=None)):
+    """删除人工会话（连同聊天记录），用于清理测试或历史接待数据。"""
+    try:
+        require_admin(authorization, "ai:human:use")
+    except AuthError as exc:
+        return _err_response(exc)
+    if not _human_conv(conv_id):
+        return JSONResponse(status_code=404, content={"code": 404, "message": "会话不存在", "data": None})
+    repo.delete_conversation(conv_id)
+    return {"code": 0, "message": "ok", "data": None}
+
+
 # 角色列表（两端共用，按 scope 过滤）
 @router.get("/api/mall/ai/roles")
 def mall_roles(

@@ -23,10 +23,20 @@ class InternalNotFoundError(Exception):
     """目标资源不存在（Java 侧 404）。"""
 
 
+class InternalTokenNotConfiguredError(RuntimeError):
+    """未配置共享密钥 AI_INTERNAL_TOKEN（fail-closed：不会带着空令牌去调 Java）。"""
+
+
 def _headers() -> dict[str, str]:
+    token = settings.ai_internal_token
+    if not token:
+        raise InternalTokenNotConfiguredError(
+            "未配置 AI_INTERNAL_TOKEN，无法调用 Java 内部接口；"
+            "请在 .env / deploy/.env 中设置，且与 Java 侧 ai.internal.token 保持一致"
+        )
     return {
         "X-Internal-Call": "true",
-        "X-Internal-Token": settings.ai_internal_token,
+        "X-Internal-Token": token,
     }
 
 
