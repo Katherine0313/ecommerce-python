@@ -1,0 +1,40 @@
+# === 环境变量 / 密钥（不要提交）===
+.env
+.env.*
+!.env.example
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# === 编辑器 / IDE / AI 工具 ===
+.idea/
+.vscode/
+.claude/
+
+# === 日志 / 临时文件 ===
+*.log
+logs/
+.tmp/
+
+# === 运行期上传文件（图片、excel 等）===
+upload/
+
+# === 数据库备份 ===
+backups/
+
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+
+# 编辑器 / IDE / AI 工具（不要提交）
+.trae/
+.trae-html-share-packages/
+.workbuddy/
